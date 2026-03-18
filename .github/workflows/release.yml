@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: video_downloader
+            asset_name: video_downloader-linux
+          - os: macos-latest
+            artifact_name: video_downloader
+            asset_name: video_downloader-mac
+          - os: windows-latest
+            artifact_name: video_downloader.exe
+            asset_name: video_downloader-windows.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libsoup-3.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev webkit2gtk-4.1
+
+      - name: Build Release
+        run: cargo build --release
+        
+      - name: Prepare Assets
+        run: |
+          mkdir -p output
+          cp target/release/${{ matrix.artifact_name }} output/${{ matrix.asset_name }}
+          
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: output/${{ matrix.asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
