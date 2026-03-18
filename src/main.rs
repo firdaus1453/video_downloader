@@ -25,6 +25,7 @@ struct VideoDownloaderApp {
     pid: Option<u32>,
     is_paused: bool,
     progress_percent: f32,
+    browser_cookie: String,
 }
 
 impl Default for VideoDownloaderApp {
@@ -43,6 +44,7 @@ impl Default for VideoDownloaderApp {
             pid: None,
             is_paused: false,
             progress_percent: 0.0,
+            browser_cookie: "Tidak Pakai".to_string(),
         }
     }
 }
@@ -129,6 +131,31 @@ impl eframe::App for VideoDownloaderApp {
                     ui.label(dir_str);
                 });
 
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("🍪 Akses Login (Browser):");
+                    egui::ComboBox::from_id_source("browser_cookie_combo")
+                        .selected_text(match self.browser_cookie.as_str() {
+                            "chrome" => "Google Chrome",
+                            "firefox" => "Mozilla Firefox",
+                            "edge" => "Microsoft Edge",
+                            "brave" => "Brave Browser",
+                            "safari" => "Safari (Mac)",
+                            "opera" => "Opera",
+                            _ => "Tidak Pakai",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.browser_cookie, "Tidak Pakai".to_string(), "Tidak Pakai");
+                            ui.selectable_value(&mut self.browser_cookie, "chrome".to_string(), "Google Chrome");
+                            ui.selectable_value(&mut self.browser_cookie, "firefox".to_string(), "Mozilla Firefox");
+                            ui.selectable_value(&mut self.browser_cookie, "edge".to_string(), "Microsoft Edge");
+                            ui.selectable_value(&mut self.browser_cookie, "brave".to_string(), "Brave Browser");
+                            ui.selectable_value(&mut self.browser_cookie, "safari".to_string(), "Safari (Mac)");
+                            ui.selectable_value(&mut self.browser_cookie, "opera".to_string(), "Opera");
+                        });
+                });
+
                 ui.add_space(15.0);
 
                 if self.is_downloading {
@@ -202,6 +229,7 @@ impl eframe::App for VideoDownloaderApp {
                             
                             let url = self.url.clone();
                             let download_dir = self.download_dir.clone().unwrap();
+                            let browser_cookie = self.browser_cookie.clone();
                             let tx = self.tx.clone();
                             let ctx_clone = ctx.clone();
 
@@ -210,11 +238,17 @@ impl eframe::App for VideoDownloaderApp {
                                 let _ = tx.blocking_send("Mencari info & mengunduh...".to_string());
                                 ctx_clone.request_repaint();
 
-                                // We use yt-dlp binary directly to parse stdout
-                                let mut child = match Command::new("yt-dlp")
-                                    .arg(&url)
-                                    .arg("-P")
-                                    .arg(&download_dir)
+                                // Construct yt-dlp command
+                                let mut cmd = Command::new("yt-dlp");
+                                cmd.arg(&url)
+                                   .arg("-P")
+                                   .arg(&download_dir);
+
+                                if browser_cookie != "Tidak Pakai" {
+                                    cmd.arg("--cookies-from-browser").arg(&browser_cookie);
+                                }
+
+                                let mut child = match cmd
                                     .stdout(Stdio::piped())
                                     .stderr(Stdio::piped())
                                     .spawn() {
