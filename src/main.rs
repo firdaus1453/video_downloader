@@ -22,6 +22,9 @@ struct VideoDownloaderApp {
     tx: mpsc::Sender<String>,
     rx: mpsc::Receiver<String>,
     history: Vec<DownloadRecord>,
+    pid: Option<u32>,
+    is_paused: bool,
+    progress_percent: f32,
 }
 
 impl Default for VideoDownloaderApp {
@@ -37,6 +40,9 @@ impl Default for VideoDownloaderApp {
             tx,
             rx,
             history: Vec::new(),
+            pid: None,
+            is_paused: false,
+            progress_percent: 0.0,
         }
     }
 }
@@ -45,13 +51,30 @@ impl eframe::App for VideoDownloaderApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle incoming messages from the background thread
         while let Ok(msg) = self.rx.try_recv() {
-            if msg.starts_with("PROGRESS:") {
-                self.progress_text = msg.replace("PROGRESS:", "").trim().to_string();
+            if msg.starts_with("PID:") {
+                if let Ok(pid) = msg.replace("PID:", "").trim().parse::<u32>() {
+                    self.pid = Some(pid);
+                }
+            } else if msg.starts_with("PROGRESS:") {
+                let progress_str = msg.replace("PROGRESS:", "").trim().to_string();
+                self.progress_text = progress_str.clone();
+                if let Some(percent_idx) = progress_str.find("%") {
+                    let text_before = &progress_str[..percent_idx];
+                    let parts: Vec<&str> = text_before.split_whitespace().collect();
+                    if let Some(last) = parts.last() {
+                        if let Ok(p) = last.parse::<f32>() {
+                            self.progress_percent = p / 100.0;
+                        }
+                    }
+                }
             } else {
                 self.status = msg.clone();
                 if msg == "Unduhan selesai!" || msg.starts_with("Error:") {
                     self.is_downloading = false;
                     self.progress_text.clear();
+                    self.pid = None;
+                    self.progress_percent = 0.0;
+                    self.is_paused = false;
                     
                     if msg == "Unduhan selesai!" {
                         if let Some(dir) = &self.download_dir {
@@ -110,12 +133,59 @@ impl eframe::App for VideoDownloaderApp {
 
                 if self.is_downloading {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new());
-                        ui.label("Sedang mengunduh...");
+                        if self.is_paused {
+                            ui.label("⏸️ Dihentikan sementara...");
+                        } else {
+                            ui.add(egui::Spinner::new());
+                            ui.label("⚡ Sedang mengunduh...");
+                        }
                     });
+
+                    if self.progress_percent > 0.0 {
+                        ui.add_space(5.0);
+                        let progress_bar = egui::ProgressBar::new(self.progress_percent)
+                            .show_percentage()
+                            .animate(!self.is_paused);
+                        ui.add(progress_bar);
+                    }
+
                     if !self.progress_text.is_empty() {
+                        ui.add_space(5.0);
                         ui.label(egui::RichText::new(&self.progress_text).monospace().color(egui::Color32::LIGHT_BLUE));
                     }
+
+                    if let Some(pid) = self.pid {
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if self.is_paused {
+                                if ui.button("▶️ Lanjutkan").clicked() {
+                                    #[cfg(unix)]
+                                    let _ = Command::new("kill").arg("-CONT").arg(pid.to_string()).status();
+                                    self.is_paused = false;
+                                }
+                            } else {
+                                if ui.button("⏸️ Jeda").clicked() {
+                                    #[cfg(unix)]
+                                    let _ = Command::new("kill").arg("-STOP").arg(pid.to_string()).status();
+                                    self.is_paused = true;
+                                }
+                            }
+
+                            if ui.button("⏹️ Batal").clicked() {
+                                #[cfg(unix)]
+                                let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+                                #[cfg(windows)]
+                                let _ = Command::new("taskkill").arg("/F").arg("/PID").arg(pid.to_string()).status();
+                                
+                                self.is_downloading = false;
+                                self.status = "Unduhan dibatalkan.".to_string();
+                                self.pid = None;
+                                self.progress_percent = 0.0;
+                                self.is_paused = false;
+                            }
+                        });
+                    }
+
                 } else {
                     if ui.button("▶️ Unduh Video").clicked() {
                         if self.url.is_empty() {
@@ -126,6 +196,9 @@ impl eframe::App for VideoDownloaderApp {
                             self.is_downloading = true;
                             self.status = "Memulai proses unduhan...".to_string();
                             self.progress_text.clear();
+                            self.progress_percent = 0.0;
+                            self.is_paused = false;
+                            self.pid = None;
                             
                             let url = self.url.clone();
                             let download_dir = self.download_dir.clone().unwrap();
@@ -153,6 +226,8 @@ impl eframe::App for VideoDownloaderApp {
                                         }
                                     };
 
+                                let _ = tx.blocking_send(format!("PID:{}", child.id()));
+
                                 if let Some(stdout) = child.stdout.take() {
                                     let reader = BufReader::new(stdout);
                                     for line in reader.lines() {
@@ -170,7 +245,7 @@ impl eframe::App for VideoDownloaderApp {
                                         let _ = tx.blocking_send("Unduhan selesai!".to_string());
                                     }
                                     Ok(status) => {
-                                        let _ = tx.blocking_send(format!("Error: Unduhan gagal dengan kode {:?}", status.code()));
+                                        let _ = tx.blocking_send(format!("Error: Unduhan gagal atau dihentikan. (Kode: {:?})", status.code()));
                                     }
                                     Err(e) => {
                                         let _ = tx.blocking_send(format!("Error: {}", e));
